@@ -1,0 +1,171 @@
+---
+title: "Files formats & Predicting Future Sales"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+## Getting data
+
+Download all datasets from  <https://www.kaggle.com/c/competitive-data-science-predict-future-sales/data> into directory `future_sales_data` and uznip it.
+
+## Access to data from spark
+
+
+```{r}
+library(sparklyr)
+library(dplyr)
+sc <- spark_connect(master = "local")
+```
+
+## Parquet and buckets
+
+```{r}
+sales_sdf <- spark_read_csv(sc, "sales", "../future_sales_data/sales_train.csv.gz")
+
+sales_sdf %>%
+  mutate(dt=to_timestamp(unix_timestamp(date, 'dd.MM.yyyy'))) %>%
+  mutate(year=year(dt), month=month(dt)) %>%
+  select(-dt) ->
+  sales_sdf
+```
+
+```{r}
+colname <- 'shop_id'
+sales_sdf %>%
+  group_by_(colname) %>%
+  summarise %>%
+  summarise(
+    n(),
+    max(!!rlang::sym(colname), na.rm = TRUE),
+    min(!!rlang::sym(colname), na.rm = TRUE)
+  ) 
+```
+
+```{r}
+sales_sdf %>%
+  spark_write_parquet(
+    "../future_sales_data/sales_train.parquet",
+    partition_by = c("shop_id", "year", "month"))
+```
+
+
+```{r}
+sales_sdf <- spark_read_parquet(sc, "sales", "../future_sales_data/sales_train.parquet/shop_id\\=0/year\\=2013/month\\=1/")
+```
+
+```{r}
+sales_sdf <- spark_read_parquet(sc, "sales", "../future_sales_data/sales_train.parquet/shop_id\\={0, 1}/year\\=2013/month\\=1/")
+```
+
+### There is no year
+
+```{r}
+sales_sdf %>%
+ head
+```
+
+```{r}
+sales_sdf %>%
+  mutate(year=2013) %>%
+  head
+```
+
+### Function to read from multiple sources
+
+```{r}
+library(whisker)
+
+read_sale <- function(shop_id, year, month) {
+  
+  path_template = "../future_sales_data/sales_train.parquet/shop_id\\={{{shop_id}}}/year\\={{{year}}}/month\\={{{month}}}/"
+  data = list(
+    shop_id=shop_id,
+    month=month,
+    year=year)
+  path <- whisker.render(path_template, data)
+  if (dir.exists(gsub("[\\]", "", path))) {
+    spark_read_parquet(sc, "sales", path) %>%
+      mutate(
+        shop_id = as.integer(shop_id),
+        year=as.integer(year),
+        month=as.integer(month))
+  } else {
+    NULL
+  }
+}
+sales_sdf <- read_sale(0, 2014, 1)
+sales_sdf
+```
+
+
+```{r}
+sales_sdf <- read_sales(0, 2000, 1)
+sales_sdf
+```
+
+```{r}
+read_sales <- function(shop_ids, years, months) {
+  sdf <- NULL
+  for (shop_id in shop_ids) {
+    for (year in years) {
+        for (month in months) {
+          new_sdf <- read_sale(shop_id, year, month)
+          if (!is.null(sdf)) {
+            if (!is.null(new_sdf)) {
+              sdf <- union_all(sdf, new_sdf)
+            }
+          } else {
+            sdf <- new_sdf
+          }
+        }
+    }
+  }
+  sdf
+}
+```
+
+```{r}
+sales_sdf <- read_sales(c(0, 1), 2013, 1)
+sales_sdf %>%
+  group_by(shop_id) %>%
+  summarise()
+```
+
+```{r}
+start_time <- Sys.time()
+sales_sdf <- read_sales(0:59, c(2013, 2014, 2015), 1:12)
+sales_sdf %>%
+  group_by(shop_id) %>%
+  summarise %>%
+  print
+end_time <- Sys.time()
+end_time - start_time
+```
+
+About 5 mins on mac...
+
+```{r}
+sales_sdf %>%
+ head
+```
+
+### Problem
+Could you move this function to a separate file `salesData.R`, import it from there and use it here?
+
+
+## Project 1: Predict shop's future sales (simplified version)
+
+We want predict next month total sales of a given shop.
+
+Steps to do:
+
+1. Data preparation
+2. Train-test splitting
+3. Training simple linear model
+4. Evaluating: implementing MSE & R2 
+
+
+
+
+
